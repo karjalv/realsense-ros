@@ -592,6 +592,30 @@ void BaseRealSenseNode::registerDynamicOption(ros::NodeHandle& nh, rs2::options 
         }
         
     }
+
+    if (sensor.supports(RS2_OPTION_EMITTER_ENABLED))
+    {
+	if (_enable_emitter) 
+    	    sensor.set_option(RS2_OPTION_EMITTER_ENABLED, 1.f);
+	else
+            sensor.set_option(RS2_OPTION_EMITTER_ENABLED, 0.f);	
+    }
+    if (sensor.supports(RS2_OPTION_LASER_POWER))
+    {	
+	auto range = sensor.get_option_range(RS2_OPTION_LASER_POWER);
+	if (_enable_emitter) 
+    	    sensor.set_option(RS2_OPTION_LASER_POWER, range.max);
+	else
+            sensor.set_option(RS2_OPTION_LASER_POWER, 0.f);	
+    }
+    if (sensor.supports(RS2_OPTION_EMITTER_ON_OFF))
+    {
+	if (_emitter_on_off) 
+    	    sensor.set_option(RS2_OPTION_EMITTER_ON_OFF, 1.f);
+	else
+            sensor.set_option(RS2_OPTION_EMITTER_ON_OFF, 0.f);	
+    }
+
     ddynrec->publishServicesTopics();
     _ddynrec.push_back(ddynrec);
 }
@@ -743,6 +767,11 @@ void BaseRealSenseNode::getParameters()
     _pnh.param("tf_publish_rate", _tf_publish_rate, TF_PUBLISH_RATE);
 
     _pnh.param("enable_sync", _sync_frames, SYNC_FRAMES);
+    _pnh.param("enable_emitter", _enable_emitter, true);
+    _pnh.param("emitter_on_off", _emitter_on_off, true);
+    _pnh.param("enable_auto_exposure", _enable_auto_exposure, true);
+    _pnh.param("manual_exposure", _manual_exposure, 10000);
+
     if (_pointcloud || _align_depth || _filters_str.size() > 0)
         _sync_frames = true;
 
@@ -2372,6 +2401,9 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
                                      bool copy_data_from_frame)
 {
     ROS_DEBUG("publishFrame(...)");
+
+    auto projector_state = f.get_frame_metadata(RS2_FRAME_METADATA_FRAME_LASER_POWER_MODE);
+
     unsigned int width = 0;
     unsigned int height = 0;
     auto bpp = 1;
@@ -2414,17 +2446,23 @@ void BaseRealSenseNode::publishFrame(rs2::frame f, const ros::Time& t,
         cam_info.header.seq = seq[stream];
         info_publisher.publish(cam_info);
 
-        sensor_msgs::ImagePtr img;
-        img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
-        img->width = width;
-        img->height = height;
-        img->is_bigendian = false;
-        img->step = width * bpp;
-        img->header.frame_id = cam_info.header.frame_id;
-        img->header.stamp = t;
-        img->header.seq = seq[stream];
+        if (!_emitter_on_off ||
+            (stream.first == RS2_STREAM_COLOR) ||
+            (stream.first == RS2_STREAM_DEPTH 	  && projector_state == 1 ) ||
+            (stream.first == RS2_STREAM_INFRARED  && projector_state == 0 ) )
+	    {
+            sensor_msgs::ImagePtr img;
+            img = cv_bridge::CvImage(std_msgs::Header(), encoding.at(stream.first), image).toImageMsg();
+            img->width = width;
+            img->height = height;
+            img->is_bigendian = false;
+            img->step = width * bpp;
+            img->header.frame_id = cam_info.header.frame_id;
+            img->header.stamp = t;
+            img->header.seq = seq[stream];
 
-        image_publisher.first.publish(img);
+            image_publisher.first.publish(img);
+        }
         ROS_DEBUG("%s stream published", rs2_stream_to_string(f.get_profile().stream_type()));
     }
     if (is_publishMetadata)
